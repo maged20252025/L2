@@ -109,31 +109,55 @@ def set_trial_start_time(user_id):
 
 def send_activation_request(user_id, code):
     """إرسال طلب تفعيل للتطبيق من قبل المستخدم."""
+    # --- بداية عبارات DEBUG print ---
+    print(f"DEBUG: send_activation_request called for user_id: {user_id}, code: {code}") 
+    # --- نهاية عبارات DEBUG print ---
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
 
     # التحقق من صلاحية الكود قبل إرسال الطلب
     c.execute("SELECT is_used FROM activation_codes WHERE code = ?", (code,))
     code_status = c.fetchone()
+    # --- بداية عبارات DEBUG print ---
+    print(f"DEBUG: Code status for '{code}': {code_status}") 
+    # --- نهاية عبارات DEBUG print ---
 
     if code_status and code_status[0] == 0: # الكود موجود وغير مستخدم
+        # --- بداية عبارات DEBUG print ---
+        print(f"DEBUG: Code '{code}' is valid and unused. Proceeding to send request.") 
+        # --- نهاية عبارات DEBUG print ---
         try:
             # قم بوضع الكود في حالة "قيد الاستخدام المؤقت" لمنع مستخدم آخر من طلبه
             c.execute("UPDATE activation_codes SET is_used = 1, used_by_user_id = ? WHERE code = ?", (user_id, code))
+            # --- بداية عبارات DEBUG print ---
+            print(f"DEBUG: Updated activation_codes table. Rows affected: {c.rowcount}") 
+            # --- نهاية عبارات DEBUG print ---
             
             # إنشاء طلب تفعيل جديد
             request_id = str(uuid.uuid4())
             c.execute("INSERT INTO activation_requests (request_id, user_id, activation_code, request_time, status) VALUES (?, ?, ?, ?, 'pending')",
                       (request_id, user_id, code, time.time()))
+            # --- بداية عبارات DEBUG print ---
+            print(f"DEBUG: Inserted into activation_requests. Rows affected: {c.rowcount}, request_id: {request_id}") 
+            # --- نهاية عبارات DEBUG print ---
             conn.commit()
+            # --- بداية عبارات DEBUG print ---
+            print("DEBUG: Database commit successful.") 
+            # --- نهاية عبارات DEBUG print ---
             conn.close()
             return True
         except Exception as e:
+            # --- بداية عبارات DEBUG print ---
+            print(f"DEBUG ERROR: An exception occurred during request sending: {e}") 
+            # --- نهاية عبارات DEBUG print ---
             st.error(f"حدث خطأ أثناء إرسال الطلب: {e}")
             conn.rollback()
             conn.close()
             return False
     else:
+        # --- بداية عبارات DEBUG print ---
+        print(f"DEBUG: Code '{code}' is either not found or already used. Code status: {code_status}") 
+        # --- نهاية عبارات DEBUG print ---
         conn.close()
         return False
 
