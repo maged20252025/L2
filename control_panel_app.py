@@ -147,7 +147,8 @@ def reject_activation_request(request_id, activation_code):
 
 st.set_page_config(page_title="لوحة تحكم القوانين اليمنية", layout="centered")
 st.markdown("<h1 style='text-align: center;'>لوحة تحكم تطبيق القوانين اليمنية</h1>", unsafe_allow_html=True)
-st.button("🔄 تحديث البيانات", on_click=lambda: st.experimental_rerun())
+# تم تحديث st.experimental_rerun() إلى st.rerun()
+st.button("🔄 تحديث البيانات", on_click=lambda: st.rerun())
 
 # تهيئة قاعدة البيانات عند بدء تشغيل لوحة التحكم
 init_db()
