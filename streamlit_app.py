@@ -37,6 +37,18 @@ def init_db():
             FOREIGN KEY (used_by_user_id) REFERENCES users(user_id)
         )
     ''')
+    # جدول طلبات التفعيل الجديدة
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS activation_requests (
+            request_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            activation_code TEXT,
+            request_time REAL NOT NULL,
+            status TEXT DEFAULT 'pending', -- 'pending', 'approved', 'rejected'
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (activation_code) REFERENCES activation_codes(code)
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -95,30 +107,44 @@ def set_trial_start_time(user_id):
     conn.commit()
     conn.close()
 
-def activate_app(user_id, code):
-    """تفعيل التطبيق للمستخدم باستخدام كود من قاعدة البيانات."""
+def send_activation_request(user_id, code):
+    """إرسال طلب تفعيل للتطبيق من قبل المستخدم."""
     conn = sqlite3.connect(DATABASE_FILE)
     c = conn.cursor()
-    
+
+    # التحقق من صلاحية الكود قبل إرسال الطلب
     c.execute("SELECT is_used FROM activation_codes WHERE code = ?", (code,))
     code_status = c.fetchone()
 
     if code_status and code_status[0] == 0: # الكود موجود وغير مستخدم
         try:
+            # قم بوضع الكود في حالة "قيد الاستخدام المؤقت" لمنع مستخدم آخر من طلبه
             c.execute("UPDATE activation_codes SET is_used = 1, used_by_user_id = ? WHERE code = ?", (user_id, code))
-            c.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,)) # للتأكد من وجود المستخدم
-            c.execute("UPDATE users SET is_activated = 1, trial_start_time = NULL, activation_code_used = ? WHERE user_id = ?", (code, user_id))
+            
+            # إنشاء طلب تفعيل جديد
+            request_id = str(uuid.uuid4())
+            c.execute("INSERT INTO activation_requests (request_id, user_id, activation_code, request_time, status) VALUES (?, ?, ?, ?, 'pending')",
+                      (request_id, user_id, code, time.time()))
             conn.commit()
             conn.close()
             return True
         except Exception as e:
-            st.error(f"حدث خطأ أثناء التفعيل: {e}")
+            st.error(f"حدث خطأ أثناء إرسال الطلب: {e}")
             conn.rollback()
             conn.close()
             return False
     else:
         conn.close()
         return False
+
+def get_activation_request_status(user_id):
+    """الحصول على حالة طلب التفعيل للمستخدم."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    c = conn.cursor()
+    c.execute("SELECT status FROM activation_requests WHERE user_id = ? ORDER BY request_time DESC LIMIT 1", (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else None
 
 def highlight_keywords(text, keywords):
     text = str(text)
@@ -223,7 +249,6 @@ def run_main_app_logic():
                 current_article_paragraphs = []
                 last_article_num = "غير معروفة"
 
-                # >>>>>> هذا هو السطر الذي تم تصحيحه <<<<<<
                 for i, para_text in enumerate(all_paragraphs_in_doc): 
                     match = re.match(r"مادة\s*\(?\s*(\d+)\)?", para_text)
                     if match:
@@ -318,14 +343,30 @@ def main():
             else:
                 st.error("❌ انتهت مدة التجربة المجانية. يرجى التفعيل.")
         
-        code = st.text_input("أدخل كود التفعيل هنا", key="activation_code_input")
-        if st.button("🔐 تفعيل التطبيق", key="activate_button"):
-            if code and activate_app(user_id, code.strip()):
-                st.success("✅ تم التفعيل بنجاح! يرجى تحديث الصفحة أو إعادة تشغيل التطبيق لتطبيق التغييرات.")
-                st.session_state.activated = True
-                st.rerun() 
-            else:
-                st.error("❌ كود التفعيل غير صحيح أو تم استخدامه مسبقًا.")
+        # --- بداية التعديلات لآلية طلب التفعيل ---
+        request_status = get_activation_request_status(user_id)
+        
+        if request_status == 'pending':
+            st.info("⏳ لقد أرسلت طلب تفعيل. نرجو الانتظار حتى تتم موافقة المسؤول. يمكنك تحديث الصفحة للتحقق من الحالة.")
+        elif request_status == 'rejected':
+            st.error("❌ تم رفض طلب التفعيل الخاص بك من قبل المسؤول. يرجى التواصل مع الدعم أو محاولة استخدام كود تفعيل آخر.")
+            code = st.text_input("أدخل كود التفعيل هنا", key="activation_code_input_rejected")
+            if st.button("🔐 إرسال طلب تفعيل جديد", key="send_new_request_button_rejected"):
+                if code and send_activation_request(user_id, code.strip()):
+                    st.success("✅ تم إرسال طلب التفعيل بنجاح! سيتم مراجعته من قبل المسؤول.")
+                    st.rerun()
+                else:
+                    st.error("❌ كود التفعيل غير صحيح أو مستخدم بالفعل أو حدث خطأ أثناء إرسال الطلب.")
+        else: # لا يوجد طلب معلق أو كان مرفوضا وتم مسح الحالة
+            code = st.text_input("أدخل كود التفعيل هنا", key="activation_code_input")
+            if st.button("🔐 إرسال طلب تفعيل", key="send_activation_request_button"):
+                if code and send_activation_request(user_id, code.strip()):
+                    st.success("✅ تم إرسال طلب التفعيل بنجاح! سيتم مراجعته من قبل المسؤول.")
+                    st.rerun() 
+                else:
+                    st.error("❌ كود التفعيل غير صحيح أو مستخدم بالفعل أو حدث خطأ أثناء إرسال الطلب. يرجى التأكد من الكود.")
+        # --- نهاية التعديلات لآلية طلب التفعيل ---
+
     else:
         run_main_app_logic()
 
