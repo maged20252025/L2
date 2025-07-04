@@ -29,6 +29,18 @@ def init_db():
             FOREIGN KEY (used_by_user_id) REFERENCES users(user_id)
         )
     ''')
+    # جدول طلبات التفعيل الجديدة (يجب أن يكون مطابقاً لـ main.py)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS activation_requests (
+            request_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            activation_code TEXT,
+            request_time REAL NOT NULL,
+            status TEXT DEFAULT 'pending', -- 'pending', 'approved', 'rejected'
+            FOREIGN KEY (user_id) REFERENCES users(user_id),
+            FOREIGN KEY (activation_code) REFERENCES activation_codes(code)
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -83,6 +95,56 @@ def reset_user_activation(user_id):
     conn.commit()
     conn.close()
 
+# --- بداية الدوال الجديدة لإدارة الطلبات ---
+def get_pending_activation_requests():
+    """الحصول على جميع طلبات التفعيل المعلقة."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    c = conn.cursor()
+    c.execute("SELECT request_id, user_id, activation_code, request_time FROM activation_requests WHERE status = 'pending'")
+    requests = c.fetchall()
+    conn.close()
+    return requests
+
+def approve_activation_request(request_id, user_id, activation_code):
+    """الموافقة على طلب تفعيل."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    c = conn.cursor()
+    try:
+        # 1. تفعيل المستخدم
+        c.execute("UPDATE users SET is_activated = 1, activation_code_used = ? WHERE user_id = ?", (activation_code, user_id))
+        # 2. تحديث حالة الكود (يجب أن يكون قد تم تعيينه إلى is_used=1 عند الإرسال)
+        # هنا نتأكد فقط من ربط المستخدم بالكود بشكل نهائي.
+        c.execute("UPDATE activation_codes SET is_used = 1, used_by_user_id = ? WHERE code = ?", (user_id, activation_code))
+        # 3. تحديث حالة الطلب
+        c.execute("UPDATE activation_requests SET status = 'approved' WHERE request_id = ?", (request_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"حدث خطأ أثناء الموافقة: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def reject_activation_request(request_id, activation_code):
+    """رفض طلب تفعيل."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    c = conn.cursor()
+    try:
+        # 1. تحديث حالة الكود ليصبح متاحاً مرة أخرى
+        c.execute("UPDATE activation_codes SET is_used = 0, used_by_user_id = NULL WHERE code = ?", (activation_code,))
+        # 2. تحديث حالة الطلب
+        c.execute("UPDATE activation_requests SET status = 'rejected' WHERE request_id = ?", (request_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"حدث خطأ أثناء الرفض: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+# --- نهاية الدوال الجديدة لإدارة الطلبات ---
+
 st.set_page_config(page_title="لوحة تحكم القوانين اليمنية", layout="centered")
 st.markdown("<h1 style='text-align: center;'>لوحة تحكم تطبيق القوانين اليمنية</h1>", unsafe_allow_html=True)
 st.button("🔄 تحديث البيانات", on_click=lambda: st.experimental_rerun())
@@ -90,7 +152,7 @@ st.button("🔄 تحديث البيانات", on_click=lambda: st.experimental_r
 # تهيئة قاعدة البيانات عند بدء تشغيل لوحة التحكم
 init_db()
 
-menu_options = ["توليد أكواد التفعيل", "عرض الأكواد والمستخدمين", "إدارة المستخدمين"]
+menu_options = ["توليد أكواد التفعيل", "عرض الأكواد والمستخدمين", "إدارة المستخدمين", "إدارة طلبات التفعيل"]
 selected_option = st.sidebar.selectbox("اختر خيارًا:", menu_options)
 
 if selected_option == "توليد أكواد التفعيل":
@@ -120,7 +182,7 @@ elif selected_option == "عرض الأكواد والمستخدمين":
             if code_to_delete:
                 delete_activation_code(code_to_delete.strip())
                 st.success(f"تم حذف الكود '{code_to_delete}' بنجاح.")
-                st.rerun() # تم التعديل هنا
+                st.rerun() 
             else:
                 st.warning("الرجاء إدخال كود لحذفه.")
     else:
@@ -155,8 +217,44 @@ elif selected_option == "إدارة المستخدمين":
             if user_id_to_reset:
                 reset_user_activation(user_id_to_reset.strip())
                 st.success(f"تم إعادة تعيين تفعيل المستخدم '{user_id_to_reset}' بنجاح.")
-                st.rerun() # تم التعديل هنا
+                st.rerun()
             else:
                 st.warning("الرجاء إدخال معرف المستخدم.")
     else:
         st.info("لا يوجد مستخدمون حاليًا لإدارتهم.")
+
+# --- قسم جديد لإدارة طلبات التفعيل ---
+elif selected_option == "إدارة طلبات التفعيل":
+    st.header("طلبات التفعيل المعلقة")
+    pending_requests = get_pending_activation_requests()
+
+    if pending_requests:
+        df_requests = pd.DataFrame(pending_requests, columns=["معرف الطلب", "معرف المستخدم", "كود التفعيل", "وقت الطلب"])
+        df_requests["وقت الطلب"] = df_requests["وقت الطلب"].apply(lambda x: pd.to_datetime(x, unit='s'))
+        st.dataframe(df_requests, height=300)
+
+        st.subheader("إدارة الطلبات")
+        for req in pending_requests:
+            request_id, user_id, activation_code, request_time = req
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                st.write(f"**المستخدم:** `{user_id}`")
+                st.write(f"**الكود:** `{activation_code}`")
+                st.write(f"**وقت الطلب:** `{pd.to_datetime(request_time, unit='s')}`")
+            with col2:
+                if st.button(f"✅ موافقة (ID: {request_id[:4]}...)", key=f"approve_{request_id}"):
+                    if approve_activation_request(request_id, user_id, activation_code):
+                        st.success(f"تمت الموافقة على طلب المستخدم {user_id[:8]}...")
+                        st.rerun()
+                    else:
+                        st.error("فشل الموافقة.")
+            with col3:
+                if st.button(f"❌ رفض (ID: {request_id[:4]}...)", key=f"reject_{request_id}"):
+                    if reject_activation_request(request_id, activation_code):
+                        st.warning(f"تم رفض طلب المستخدم {user_id[:8]}...")
+                        st.rerun()
+                    else:
+                        st.error("فشل الرفض.")
+            st.markdown("---") # خط فاصل بين الطلبات
+    else:
+        st.info("لا توجد طلبات تفعيل معلقة حاليًا.")
